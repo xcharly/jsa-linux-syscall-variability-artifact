@@ -1,0 +1,455 @@
+---
+title: "Trie-based monitor: node search times and on-chip memory (Sections 4.4-4.5)"
+author: "Charles-Alexis Lefebvre"
+output: html_document
+---
+<!--
+SPDX-License-Identifier: AGPL-3.0-only
+
+Copyright (C) 2025-2026 IKERLAN, S.Coop
+
+Author: Charles-Alexis Lefebvre
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License as published by the Free Software Foundation, version 3.
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General
+Public License for more details (scripts/LICENSE, or <https://www.gnu.org/licenses/>).
+-->
+
+This document recomputes, from the raw output of the trie prototype, the node search times reported in Section 4.4 and draws Fig. 7, and it evaluates the on-chip memory organization proposed in Section 4.5. The on-chip memory organization also uses constants that do not come from the data of the artifact: `t_min`, the shortest interval between two function calls (ns), and the memory parameters of the paper (worst-case latency, size of a read, peak bandwidth), all set in the chunk `bank-constants`.
+
+The input is `data/trie-monitor_run/search_times_raw.csv.gz`, written by `trie-monitor/build/monitor` (Jetson Nano, real-time kernel, `OPT=O2`, `sudo chrt -f 98`, seed 1). It has one line per run, `kind,average_ns,max_ns`:
+
+- `kind` is `known` (a path of the trie) or `unknown` (a path of the trie with one random line replaced);
+- `average_ns` is the average node search time over the nodes of the trace;
+- `max_ns` is the largest single node search time of the trace.
+
+Render it from the artifact root with `Rscript -e "rmarkdown::render('scripts/trie.Rmd', output_dir = getwd())"`, or knit it from RStudio.
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+# Find the artifact root, whatever the working directory is: the artifact root itself or its scripts/ folder
+raw_name <- file.path("data", "trie-monitor_run", "search_times_raw.csv.gz")
+candidates <- c(".", "..")
+root <- candidates[file.exists(file.path(candidates, raw_name))][1]
+if (is.na(root)) {
+  stop("The artifact was not found from the working directory (", getwd(), "). ",
+       "Set the working directory to the artifact root or to its scripts/ folder.")
+}
+raw_file <- file.path(root, raw_name)
+K <- 1.5   # IQR multiplier of the outlier fences (the usual value)
+write_fig7_pdf <- FALSE   # TRUE to also write maxtimes.pdf, Fig. 7 of the paper, in the artifact root
+```
+
+## Raw data
+
+```{r read}
+raw <- read.csv(gzfile(raw_file), stringsAsFactors = FALSE)
+known   <- raw[raw$kind == "known", ]
+unknown <- raw[raw$kind == "unknown", ]
+data.frame(kind = c("known", "unknown"), runs = c(nrow(known), nrow(unknown)))
+```
+
+## Statistics
+
+The outliers (a few values of tens of microseconds, most likely caused by system interruptions and memory accesses) are discarded with the interquartile range (IQR): values below Q1 - K*IQR or above Q3 + K*IQR are removed, with K = `r K`. The standard deviation is the population one. The statistics are given for both columns, as the node search times of the paper are the filtered values of `average_ns`.
+
+```{r statistics}
+pop_sd <- function(x) sqrt(mean((x - mean(x))^2))
+
+iqr_filter <- function(x) {
+  q <- quantile(x, c(0.25, 0.75), type = 7)
+  fences <- c(q[[1]] - K * (q[[2]] - q[[1]]), q[[2]] + K * (q[[2]] - q[[1]]))
+  list(q = q, fences = fences, kept = x[x >= fences[1] & x <= fences[2]])
+}
+
+describe <- function(kind, column, x) {
+  f <- iqr_filter(x)
+  data.frame(kind = kind, column = column,
+             raw_mean = mean(x), raw_std = pop_sd(x), raw_max = max(x),
+             Q1 = f$q[[1]], Q3 = f$q[[2]], removed_pct = 100 * (1 - length(f$kept) / length(x)),
+             mean = mean(f$kept), std = pop_sd(f$kept), max = max(f$kept))
+}
+
+stats <- rbind(describe("known", "average_ns", known$average_ns),
+               describe("known", "max_ns", known$max_ns),
+               describe("unknown", "average_ns", unknown$average_ns),
+               describe("unknown", "max_ns", unknown$max_ns))
+knitr::kable(stats, digits = 2, row.names = FALSE,
+             col.names = c("paths", "column", "raw mean", "raw std", "raw max", "Q1", "Q3",
+                           "removed (%)", "filtered mean", "filtered std", "filtered max"))
+```
+
+## Fig. 7
+
+The maximum node search time over the known and the unknown paths (`max_ns`), and the mean over both (`average_ns`), after 1, 10, ..., 1,000,000 iterations.
+
+```{r fig7-data}
+n_runs <- min(nrow(known), nrow(unknown))
+iterations <- 10^(0:floor(log10(n_runs)))
+fig7 <- data.frame(
+  iterations = iterations,
+  max_known = cummax(known$max_ns)[iterations],
+  max_unknown = cummax(unknown$max_ns)[iterations],
+  mean_all = (cumsum(known$average_ns)[iterations] + cumsum(unknown$average_ns)[iterations]) / (2 * iterations))
+fig7_table <- transform(fig7, iterations = format(iterations, big.mark = ",", scientific = FALSE, trim = TRUE))
+knitr::kable(fig7_table, digits = 0, row.names = FALSE, align = "rrrr",
+             col.names = c("iterations", "max, known paths (ns)", "max, unknown paths (ns)", "mean, both (ns)"))
+```
+
+```{r fig7-plot, fig.width = 7, fig.height = 5}
+draw_fig7 <- function() {
+  cols <- c("blue", "orange", "red")   # max (known), max (unknown), average
+  par(mar = c(5, 5, 2, 1) + 0.1)
+  plot(fig7$iterations, fig7$max_known, type = "o", pch = 20, lty = 1, lwd = 0, col = "blue", log = "xy",
+       ylab = "", xlab = "", yaxt = "n", ylim = c(10^2, 10^5), cex.axis = 1.2)
+  axis(2, at = c(0, 10^(1:5)), cex.axis = 1.2)
+  abline(h = c(10, 100, 1000, 10000, 100000), col = "grey", lty = "longdash")
+  lines(fig7$iterations, fig7$max_known, type = "o", pch = 17, lty = 1, lwd = 2, col = cols[1])
+  lines(fig7$iterations, fig7$max_unknown, type = "o", pch = 18, lty = 2, lwd = 2, col = cols[2])
+  lines(fig7$iterations, fig7$mean_all, type = "o", pch = 19, lty = 3, lwd = 2, col = cols[3])
+  title(xlab = "Number of iterations", line = 3, cex.lab = 1.5)
+  title(ylab = "Time (ns)", line = 3, cex.lab = 1.5)
+  legend("topleft", legend = c("Max (known paths)", "Max (unknown paths)", "Average (combined)"),
+         col = cols, lty = 1:3, pch = c(17, 18, 19), lwd = 2, y.intersp = 1.5)
+}
+draw_fig7()
+```
+
+Optionally, the figure of the paper can be written to `maxtimes.pdf` in the artifact root. This chunk only runs if `write_fig7_pdf` is set to `TRUE` in the setup chunk at the top of the document:
+
+```{r fig7-pdf, eval = write_fig7_pdf}
+pdf(file.path(root, "maxtimes.pdf"), width = 7, height = 5)
+draw_fig7()
+invisible(dev.off())
+```
+
+## Plain trie and radix trie of `openat` (Sections 4.4-4.5)
+
+The C prototype builds the two tries from the 1,053 execution paths of `trie-monitor/data/traces_rt_openat/` and reports their memory (Sections 4.4 and 4.5): the plain trie stores one function call per node, and the radix trie merges each chain of nodes that have a single child into one radix node. Besides the memory report, the prototype writes the structure of the trie, one line per node of the plain trie, with the radix node that holds it, to a file. That file, `data/trie-monitor_run/trie_nodes.csv`, comes from a run of the prototype on the Jetson Nano, and it is the input of this section:
+
+- `node`: number of the node (the root is node 1);
+- `parent`: number of the parent node (0 for the root);
+- `depth`: number of function calls from the root to the node (0 for the root);
+- `rnode`: number of the radix node whose chain holds the node;
+- `offset`: position of the node inside that chain (0 for the first one);
+- `label`: the function call (identifier) of the node.
+
+```{r trie-input}
+trie_file <- file.path(root, "data", "trie-monitor_run", "trie_nodes.csv")
+trie <- read.csv(trie_file, stringsAsFactors = FALSE)
+```
+
+### Plain trie
+
+A node of the plain trie is a distinct prefix of the paths, that is, a distinct sequence of function calls from the start of the system call. Paths that share a prefix share its nodes.
+
+```{r plain-trie}
+plain_trie <- trie[, c("node", "label", "depth", "parent")]
+n <- nrow(plain_trie)                      # plain-trie nodes, including the root
+
+plain_summary <- data.frame(
+  quantity = c("plain-trie nodes (with root)", "levels", "leaves"),
+  value = c(n, max(plain_trie$depth), sum(!(plain_trie$node %in% plain_trie$parent))))
+plain_summary$value <- format(plain_summary$value, big.mark = ",", trim = TRUE)
+knitr::kable(plain_summary, align = "lr", col.names = c("", "value"))
+```
+
+### Radix trie
+
+A radix node is a maximal chain of plain-trie nodes in which every node is the only child of the previous one (a run of calls with no alternative). The radix trie is described by two tables:
+
+- `radix_member`, one row per plain node: the radix node that contains it (`rnode`) and its position inside the chain (`offset`). The on-chip organization (next section) works on it;
+- `radix_nodes`, one row per radix node: its first plain node and the function call of that node, the number of identifiers of its chain (`length`) and its parent radix node (`parent`, 0 for the first one). Like the C code, the first radix node holds the root: its chain starts with the root and `SyS_openat()`.
+
+```{r radix-trie}
+radix_member <- trie[, c("rnode", "offset")]
+n_radix <- max(trie$rnode)                 # radix nodes
+first <- trie[trie$offset == 0, ]          # the first identifier of every radix node
+radix_nodes <- data.frame(rnode = first$rnode, first = first$node, label = first$label,
+                          length = tabulate(trie$rnode, nbins = n_radix),
+                          parent = c(0L, trie$rnode)[first$parent + 1L],   # radix node of the parent node (0 = none)
+                          stringsAsFactors = FALSE)
+
+radix_summary <- data.frame(
+  quantity = c("radix nodes", "identifiers in their chains (the plain-trie nodes, with the root)"),
+  value = c(n_radix, sum(radix_nodes$length)))
+radix_summary$value <- format(radix_summary$value, big.mark = ",", trim = TRUE)
+knitr::kable(radix_summary, align = "lr", col.names = c("", "value"))
+```
+
+The two counts are the ones of the memory report of the C prototype: 47,771 nodes for the plain trie, and 1,643 radix nodes with 47,771 stored calls for the radix trie.
+
+## On-chip memory organization (Section 4.5)
+
+The complete radix tries of the system calls reside in an external memory dedicated to the monitor, where each radix node is stored contiguously, its header followed by its identifiers, from a 64-B boundary; each read transfers 64 B. Since the next function calls can only follow the paths below the current position of the monitor, the on-chip memory only holds a small part of the trie, organized in two banks. Both banks hold identifiers, one per function call, together with the headers of the radix nodes they belong to. As in the paper, $\mathrm{size}(X)$ is the size of a set $X$ of identifiers, with 8 B per identifier and 24 B per header, and
+
+- $p$ is the position of the monitor, a node of the trie, after each function call;
+- $k$ is the number of function calls ahead at which the identifiers are requested;
+- $t_{\min}$ is the shortest interval between two function calls, and $t_{\mathrm{lat}}$ the worst-case time between a request to the external memory and the arrival of its data;
+- $W_k(p)$ is the set of identifiers within $k$ function calls after $p$;
+- $R_k(p)$ is the number of separate reads needed at position $p$ to bring the identifiers located exactly $k$ function calls ahead (the identifiers of a radix node are contiguous, so one read brings several of them, but different branches lie in different radix nodes and need separate reads);
+- $E_k(s)$ is the set of identifiers within the first $k$ function calls of the trie of the system call $s$;
+- $S_0$ and $S_1$ are the sizes of bank 0 and bank 1.
+
+The organization is evaluated on the radix trie of `openat`, built above, and for the pessimistic case in which each of the 500 system calls has a trie like that of `openat`.
+
+Constants of the calculation:
+
+```{r bank-constants}
+ID_B <- 8           # B: an identifier, the 8-B address of the function
+HDR_B <- 24         # B: the header of a radix node: 8 (chain of identifiers) + 4 (their number) + 8 (children) + 4 (their number)
+t_min <- 104        # ns: shortest interval between two function calls (the shortest function call in the raw traces)
+t_lat <- 1000       # ns: assumed worst-case latency of a read from the external memory
+BURST_B <- 64       # B: size of one read, the burst of a DDR4 memory with a 64-bit interface (BL8)
+PEAK_GBPS <- 19.2   # GB/s: peak bandwidth of the DDR4-2400 memory on a 64-bit interface
+N_SYSCALLS <- 500   # system calls with a trie like that of openat: projection of Section 4.4
+```
+
+The trie of `openat`, as vectors indexed by the node number (node 1 is the root, its parent is 0), and the size function:
+
+```{r bank-trie}
+n <- nrow(plain_trie)
+parent <- plain_trie$parent     # parent of every node
+depth <- plain_trie$depth       # function calls from the root to every node
+rnode <- radix_member$rnode     # radix node that holds every node (the node of its header)
+offset <- radix_member$offset   # position of every node inside the chain of its radix node
+
+# size(X): size of a set X of identifiers (node numbers): 8 B each, plus 24 B for the header of each radix node
+# they belong to (counted once)
+size_of <- function(X) ID_B * length(X) + HDR_B * length(unique(rnode[X]))
+```
+
+The latency fixes the smallest value of $k$: each read must arrive before its identifiers can be needed, that is, $k \cdot t_{\min} \geq t_{\mathrm{lat}}$, so $k \geq t_{\mathrm{lat}} / t_{\min} =$ `r t_lat` / `r t_min`, that is, $k \geq$ `r ceiling(t_lat / t_min)`. The two values of $k$ that the paper evaluates are the smallest one and the smallest plus 2, where every read has two more function calls to be served.
+
+```{r bank-k}
+k_min <- ceiling(t_lat / t_min)
+ks <- c(k_min, k_min + 2L)
+```
+
+### Bank 0
+
+Bank 0 works as a window that moves with the monitor: at each function call, the monitor requests the identifiers located exactly $k$ function calls ahead on each branch below its position $p$, and frees the branches that the path has left. It must satisfy three conditions, which are evaluated at every position of the trie:
+
+- **Latency.** Besides $k \cdot t_{\min} \geq t_{\mathrm{lat}}$, since reads are requested at every function call, the external memory must accept as many outstanding reads as are requested within $k$ consecutive function calls.
+- **Bandwidth.** The memory must complete the reads of one step within $t_{\min}$, that is, $\max_p R_k(p) \cdot t_{\mathrm{read}} \leq t_{\min}$, where $t_{\mathrm{read}}$ is the time that the memory needs for each separate read when several reads overlap. When $k$ is larger than the latency requires, the reads requested over $L$ consecutive function calls have $L + (k - k_{\min})$ calls to complete, which spreads the peaks.
+- **Size.** $S_0 = \max_p \mathrm{size}(W_k(p))$, the largest window over all the positions (the root is not a position).
+
+The functions that evaluate them: $W_k(p)$ and $R_k(p)$ for every position, the largest number of reads over runs of consecutive positions. The size of a window is $\mathrm{size}(W_k(p))$, with the function `size_of()` above.
+
+```{r bank0-definitions}
+# W_k(p): a node belongs to the window of each of its first k ancestors; the pairs (p, node) list them all
+window_pairs <- function(k) {
+  position <- parent[-1]                  # the ancestor 1 level above every node but the root
+  node <- 2:n
+  pairs <- vector("list", k)
+  for (levels in seq_len(k)) {
+    exists <- position > 0                # the ancestor exists: it is not above the root
+    position <- position[exists]; node <- node[exists]
+    pairs[[levels]] <- data.frame(position = position, node = node, levels = levels)
+    position <- parent[position]          # one more level up
+  }
+  do.call(rbind, pairs)
+}
+
+# An identifier needs its own read if it is the first of its radix node, or if it starts a new 64-B block
+# inside the chain (the header takes the first 24 B)
+starts_read <- function(offset) {
+  offset == 0 | (HDR_B + ID_B * offset) %/% BURST_B > (HDR_B + ID_B * (offset - 1)) %/% BURST_B
+}
+
+# R_k(p): for every position p, the separate reads that bring the identifiers exactly k levels below it
+read_count <- function(W_k, k) {
+  exactly_k <- W_k$levels == k
+  tabulate(W_k$position[exactly_k & starts_read(offset[W_k$node])], nbins = n)
+}
+
+# m[L]: the largest number of reads requested over L consecutive positions of a path (a position and the
+# ones above it); a path with fewer than L positions counts with the positions it has
+reads_over_runs <- function(R_k) {
+  R_k[1] <- 0L                            # the root is not a position
+  at <- 2:n                               # every run ends at a position
+  in_run <- integer(length(at))
+  m <- numeric(max(depth))
+  for (L in seq_along(m)) {
+    in_run <- in_run + R_k[at]            # the run grows by one position, going up the path
+    m[L] <- max(in_run)
+    at <- pmax(parent[at], 1L)            # at the root a run stops growing
+  }
+  m
+}
+
+bytes <- function(x) format(x, big.mark = ",", trim = TRUE)
+bank0 <- list(); bank1 <- list()          # the results of each bank, by value of k
+```
+
+#### k = 10
+
+Every read has exactly the time $k \cdot t_{\min}$ to be served, so there is no extra slack.
+
+```{r bank0-k10}
+k <- k_min
+
+# The calculation
+W_k <- window_pairs(k)                      # W_k(p) for every position p
+R_k <- read_count(W_k, k)                   # R_k(p) for every position p
+m <- reads_over_runs(R_k)                   # m[L]: most reads over L consecutive positions
+
+not_root <- W_k$position > 1                # the root is not a position
+windows <- split(W_k$node[not_root], W_k$position[not_root])   # W_k(p) for every position p: a vector of identifiers
+size_W <- vapply(windows, size_of, numeric(1))                 # size(W_k(p)) for every position p
+p_max <- as.integer(names(windows))[which.max(size_W)]         # the position with the largest window
+largest_window <- windows[[as.character(p_max)]]               # W_k(p_max): the vector of its identifiers
+
+# The values of bank 0
+outstanding_reads <- m[k]                                      # latency: reads requested within k consecutive calls
+largest_step <- m[1]                                           # bandwidth: max_p R_k(p), reads of the largest step
+time_between_reads <- t_min / max(m / (seq_along(m) + k - k_min))  # bandwidth: time between two reads (ns)
+identifiers_0 <- length(largest_window)                        # size: identifiers of the largest window
+radix_nodes_0 <- length(unique(rnode[largest_window]))         # size: radix nodes (headers) they belong to
+S_0 <- max(size_W)                                             # size: S_0 = max_p size(W_k(p))
+stopifnot(S_0 == ID_B * identifiers_0 + HDR_B * radix_nodes_0) # = 8 B per identifier + 24 B per header
+
+bank0[[as.character(k)]] <- list(S_0 = S_0)
+knitr::kable(data.frame(
+  c("latency: outstanding reads (within k consecutive calls)",
+    "bandwidth: largest step, max R_k(p) (reads)", "bandwidth: time between two reads (ns)",
+    "size: identifiers of the largest window", "size: radix nodes of the largest window", "size: S_0 (B)"),
+  c(outstanding_reads, largest_step, sprintf("%.1f", time_between_reads),
+    identifiers_0, radix_nodes_0, bytes(S_0))),
+  col.names = c(paste("bank 0, k =", k), "result"), align = "lr")
+```
+
+With $k = 10$, the memory must accept `r outstanding_reads` outstanding reads. The largest step needs `r largest_step` separate reads within $t_{\min}$ = `r t_min` ns, that is, one read every `r sprintf("%.1f", time_between_reads)` ns, to be compared with the `r sprintf("%.1f", BURST_B / PEAK_GBPS)` ns that the memory needs to transfer 64 B at its peak bandwidth ($`r PEAK_GBPS`$ GB/s). The largest window holds `r identifiers_0` identifiers from `r radix_nodes_0` radix nodes, so bank 0 needs $S_0 = 8 \times$ `r identifiers_0` $+ 24 \times$ `r radix_nodes_0` = `r bytes(S_0)` B.
+
+#### k = 12
+
+Every read has two more function calls to be served, so the reads requested over $L$ consecutive calls have $L + 2$ calls to complete.
+
+```{r bank0-k12}
+k <- k_min + 2L
+
+# The calculation
+W_k <- window_pairs(k)                      # W_k(p) for every position p
+R_k <- read_count(W_k, k)                   # R_k(p) for every position p
+m <- reads_over_runs(R_k)                   # m[L]: most reads over L consecutive positions
+
+not_root <- W_k$position > 1                # the root is not a position
+windows <- split(W_k$node[not_root], W_k$position[not_root])   # W_k(p) for every position p: a vector of identifiers
+size_W <- vapply(windows, size_of, numeric(1))                 # size(W_k(p)) for every position p
+p_max <- as.integer(names(windows))[which.max(size_W)]         # the position with the largest window
+largest_window <- windows[[as.character(p_max)]]               # W_k(p_max): the vector of its identifiers
+
+# The values of bank 0
+outstanding_reads <- m[k]                                      # latency: reads requested within k consecutive calls
+largest_step <- m[1]                                           # bandwidth: max_p R_k(p), reads of the largest step
+time_between_reads <- t_min / max(m / (seq_along(m) + k - k_min))  # bandwidth: time between two reads (ns)
+identifiers_0 <- length(largest_window)                        # size: identifiers of the largest window
+radix_nodes_0 <- length(unique(rnode[largest_window]))         # size: radix nodes (headers) they belong to
+S_0 <- max(size_W)                                             # size: S_0 = max_p size(W_k(p))
+stopifnot(S_0 == ID_B * identifiers_0 + HDR_B * radix_nodes_0) # = 8 B per identifier + 24 B per header
+
+bank0[[as.character(k)]] <- list(S_0 = S_0)
+knitr::kable(data.frame(
+  c("latency: outstanding reads (within k consecutive calls)",
+    "bandwidth: largest step, max R_k(p) (reads)", "bandwidth: time between two reads (ns)",
+    "size: identifiers of the largest window", "size: radix nodes of the largest window", "size: S_0 (B)"),
+  c(outstanding_reads, largest_step, sprintf("%.1f", time_between_reads),
+    identifiers_0, radix_nodes_0, bytes(S_0))),
+  col.names = c(paste("bank 0, k =", k), "result"), align = "lr")
+```
+
+With $k = 12$, the memory must accept `r outstanding_reads` outstanding reads, and it must sustain one read every `r sprintf("%.1f", time_between_reads)` ns (the largest step needs `r largest_step` reads). The largest window holds `r identifiers_0` identifiers from `r radix_nodes_0` radix nodes, so bank 0 needs $S_0 = 8 \times$ `r identifiers_0` $+ 24 \times$ `r radix_nodes_0` = `r bytes(S_0)` B.
+
+### Bank 1
+
+Bank 1 is needed because the next system call depends on the application and cannot be predicted: when a system call starts, its first $k$ function calls must already be on chip, since the first read requested for it arrives only $k$ function calls later. Its size is $S_1 = \sum_{s \in \mathcal{S}} \mathrm{size}(E_k(s))$, where $\mathcal{S}$ is the set of system calls used by the application. $E_k(s)$ holds $k$ identifiers if the trie does not branch within its first $k$ function calls, and more otherwise. For 500 system calls with a trie like that of `openat`, $S_1$ is 500 times $\mathrm{size}(E_k(\texttt{openat}))$.
+
+#### k = 10
+
+```{r bank1-k10}
+k <- k_min
+
+# The calculation
+E_k <- which(depth >= 1 & depth <= k)       # E_k(openat): the vector of the identifiers within the first k calls
+
+# The values of bank 1
+identifiers_1 <- length(E_k)                # identifiers of E_k(openat)
+radix_nodes_1 <- length(unique(rnode[E_k])) # radix nodes (headers) they belong to
+S_1_openat <- size_of(E_k)                  # size(E_k(openat)) = 8 B per identifier + 24 B per header
+S_1 <- N_SYSCALLS * S_1_openat              # S_1 for the 500 system calls
+stopifnot(S_1_openat == ID_B * identifiers_1 + HDR_B * radix_nodes_1)
+
+bank1[[as.character(k)]] <- list(S_1_openat = S_1_openat, S_1 = S_1)
+knitr::kable(data.frame(
+  c("E_k(openat): identifiers", "E_k(openat): radix nodes", "size(E_k(openat)) (B)", "S_1, 500 system calls (B)"),
+  c(identifiers_1, radix_nodes_1, bytes(S_1_openat), bytes(S_1))),
+  col.names = c(paste("bank 1, k =", k), "result"), align = "lr")
+```
+
+With $k = 10$, bank 1 holds `r identifiers_1` identifiers and the headers of `r radix_nodes_1` radix nodes for `openat`, that is, $8 \times$ `r identifiers_1` $+ 24 \times$ `r radix_nodes_1` = `r bytes(S_1_openat)` B, and $S_1$ = `r bytes(S_1)` B for the 500 system calls.
+
+#### k = 12
+
+```{r bank1-k12}
+k <- k_min + 2L
+
+# The calculation
+E_k <- which(depth >= 1 & depth <= k)       # E_k(openat): the vector of the identifiers within the first k calls
+
+# The values of bank 1
+identifiers_1 <- length(E_k)                # identifiers of E_k(openat)
+radix_nodes_1 <- length(unique(rnode[E_k])) # radix nodes (headers) they belong to
+S_1_openat <- size_of(E_k)                  # size(E_k(openat)) = 8 B per identifier + 24 B per header
+S_1 <- N_SYSCALLS * S_1_openat              # S_1 for the 500 system calls
+stopifnot(S_1_openat == ID_B * identifiers_1 + HDR_B * radix_nodes_1)
+
+bank1[[as.character(k)]] <- list(S_1_openat = S_1_openat, S_1 = S_1)
+knitr::kable(data.frame(
+  c("E_k(openat): identifiers", "E_k(openat): radix nodes", "size(E_k(openat)) (B)", "S_1, 500 system calls (B)"),
+  c(identifiers_1, radix_nodes_1, bytes(S_1_openat), bytes(S_1))),
+  col.names = c(paste("bank 1, k =", k), "result"), align = "lr")
+```
+
+With $k = 12$, bank 1 holds `r identifiers_1` identifiers and the headers of `r radix_nodes_1` radix nodes for `openat`, that is, $8 \times$ `r identifiers_1` $+ 24 \times$ `r radix_nodes_1` = `r bytes(S_1_openat)` B, and $S_1$ = `r bytes(S_1)` B for the 500 system calls.
+
+### Both banks
+
+Together, the two banks must fit in the on-chip memory of the monitor, that is, $S_0 + S_1$ must not exceed its capacity. Bank 0 only holds the window of the system call being executed, so it is counted once.
+
+```{r both-banks-k10}
+k <- k_min
+
+# The values of the two banks (from the results above)
+S_0 <- bank0[[as.character(k)]]$S_0
+S_1_openat <- bank1[[as.character(k)]]$S_1_openat
+S_1 <- bank1[[as.character(k)]]$S_1
+S_both_openat <- S_0 + S_1_openat           # S_0 + S_1 for openat alone
+S_both_all <- S_0 + S_1                     # S_0 + S_1 for the 500 system calls
+
+knitr::kable(data.frame(
+  c("S_0 + S_1, openat alone (B)", "S_0 + S_1, 500 system calls (B)"),
+  c(bytes(S_both_openat), bytes(S_both_all))),
+  col.names = c(paste("both banks, k =", k), "result"), align = "lr")
+```
+
+With $k = 10$, the two banks need $S_0 + S_1$ = `r bytes(S_0)` + `r bytes(S_1_openat)` = `r bytes(S_both_openat)` B for `openat` alone, and `r bytes(S_both_all)` B for the 500 system calls.
+
+```{r both-banks-k12}
+k <- k_min + 2L
+
+# The values of the two banks (from the results above)
+S_0 <- bank0[[as.character(k)]]$S_0
+S_1_openat <- bank1[[as.character(k)]]$S_1_openat
+S_1 <- bank1[[as.character(k)]]$S_1
+S_both_openat <- S_0 + S_1_openat           # S_0 + S_1 for openat alone
+S_both_all <- S_0 + S_1                     # S_0 + S_1 for the 500 system calls
+
+knitr::kable(data.frame(
+  c("S_0 + S_1, openat alone (B)", "S_0 + S_1, 500 system calls (B)"),
+  c(bytes(S_both_openat), bytes(S_both_all))),
+  col.names = c(paste("both banks, k =", k), "result"), align = "lr")
+```
+
+With $k = 12$, the two banks need $S_0 + S_1$ = `r bytes(S_0)` + `r bytes(S_1_openat)` = `r bytes(S_both_openat)` B for `openat` alone, and `r bytes(S_both_all)` B for the 500 system calls.

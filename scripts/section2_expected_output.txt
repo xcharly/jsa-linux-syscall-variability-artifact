@@ -1,0 +1,24 @@
+=== regular: 100 campaigns (test_2023-12-13_085253694672 .. test_2023-12-16_034358408435)
+openat executions: 199,989; unique execution paths: 2,737
+new paths per campaign: first 5 [96, 85, 72, 56, 55], mean of the last 20 campaigns 21.9
+most common paths: 66.9%, 26.1%, 0.7%
+paths needed to cover 99% / 99.9% of the executions: 764 / 2538
+execution time: min 106.5 us, median 179.1 us, max 24,332 us
+campaign level (mean and 95% CI across campaigns):
+  paths seen in no other campaign:            19.5 [18.3, 20.6]
+  share of the most common path (%):         66.9 [66.5, 67.3]
+  median execution time (us):                178.6 [178.1, 179.0]
+  99th percentile of the execution time (us): 890.9 [877.1, 904.7]
+  distinct paths per campaign:               91.7 [90.0, 93.4]
+=== real-time: 100 campaigns (test_2023-12-20_152532900634 .. test_2023-12-22_235044562831)
+openat executions: 199,986; unique execution paths: 1,053
+new paths per campaign: first 5 [99, 46, 72, 32, 21], mean of the last 20 campaigns 5.6
+most common paths: 86.2%, 5.5%, 3.2%
+paths needed to cover 99% / 99.9% of the executions: 226 / 854
+execution time: min 165.1 us, median 178.9 us, max 2,039 us
+campaign level (mean and 95% CI across campaigns):
+  paths seen in no other campaign:            5.3 [4.7, 5.9]
+  share of the most common path (%):         86.2 [85.3, 87.2]
+  median execution time (us):                178.9 [178.8, 179.0]
+  99th percentile of the execution time (us): 392.8 [380.1, 405.5]
+  distinct paths per campaign:               84.7 [75.6, 93.8]

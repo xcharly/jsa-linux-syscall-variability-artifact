@@ -1,0 +1,11 @@
+# C build artifacts
+build/
+*.o
+*.elf
+*.bin
+
+# extracted from data/traces_rt_openat.tar.gz
+data/traces_rt_openat/
+
+# VSCode configuration
+.vscode/

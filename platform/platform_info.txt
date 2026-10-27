@@ -1,0 +1,60 @@
+Platform information of the Nvidia Jetson Nano used in both scenarios,
+extracted (read-only) from the SD-card image of the board. The sections below
+reproduce, unchanged, the content of the files that were collected, except the
+build user and host of the kernel version strings, replaced by user@host.
+
+==== Jetson Linux release (nv_tegra_release) ====
+# R32 (release), REVISION: 7.1, GCID: 29818004, BOARD: t210ref, EABI: aarch64, DATE: Sat Feb 19 17:05:08 UTC 2022
+
+==== Power mode (nvpmodel status; mode 0) ====
+pmode:0000 fmode:fanNull
+
+==== Kernel version strings (regular kernel first, then real-time kernel) ====
+Linux version 4.9.253-tegra (user@host) (gcc version 7.3.1 20180425 [linaro-7.3-2018.05 revision d29120a424ecfbc167ef90065c0eeb7f91977701] (Linaro GCC 7.3-2018.05) ) #2 SMP PREEMPT Fri Nov 24 12:46:07 CET 2023
+Linux version 4.9.253-rt168-tegra (user@host) (gcc version 7.3.1 20180425 [linaro-7.3-2018.05 revision d29120a424ecfbc167ef90065c0eeb7f91977701] (Linaro GCC 7.3-2018.05) ) #3 SMP PREEMPT RT Wed Dec 20 10:31:29 CET 2023
+
+==== Services enabled in multi-user.target ====
+ModemManager.service
+NetworkManager.service
+anacron.service
+avahi-daemon.service
+console-setup.service
+containerd.service
+cron.service
+dns-clean.service
+docker.service
+kerneloops.service
+monitor-startup.service
+networkd-dispatcher.service
+networking.service
+nfs-client.target
+nv-l4t-bootloader-config.service
+nv-l4t-usb-device-mode.service
+nv-late-init.service
+nv.service
+nvargus-daemon.service
+nvfb-early.service
+nvfb.service
+nvgetty.service
+nvmemwarning.service
+nvphs.service
+nvpmodel.service
+nvs-service.service
+nvweston.service
+nvzramconfig.service
+pppd-dns.service
+remote-fs.target
+rpcbind.service
+rsync.service
+rsyslog.service
+snapd.apparmor.service
+snapd.autoimport.service
+snapd.core-fixup.service
+snapd.recovery-chooser-trigger.service
+snapd.seeded.service
+snapd.service
+ssh.service
+systemd-resolved.service
+ubuntu-fan.service
+whoopsie.service
+wpa_supplicant.service

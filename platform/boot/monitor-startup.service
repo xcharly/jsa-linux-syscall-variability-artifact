@@ -1,0 +1,10 @@
+[Unit]
+After=network.target
+Description="Startup script"
+
+[Service]
+ExecStart=/home/nano1/startup_script.sh
+User=root
+
+[Install]
+WantedBy=multi-user.target

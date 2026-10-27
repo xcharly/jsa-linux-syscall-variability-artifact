@@ -1,0 +1,678 @@
+Copyright (C) 2022-2025 IKERLAN, S.Coop
+Author:  Markel Galarraga
+Date:    December 2022 - November 2025
+Subject: Read the execution time of each system call and set up the measurement campaigns
+Base:    DB4SIL2 commit 15c2c2bd7a0d8cbc04de331b018796c89f383a78 (2020-03-02)
+
+Apply from the root of DB4SIL2, with commit 15c2c2b checked out:
+
+    git apply ../patches/15c2c2b_read_execution_times.patch
+
+---
+diff --git a/src/db4sil2.cfg b/src/db4sil2.cfg
+index 70ffe4e..c8f1f99 100644
+--- a/src/db4sil2.cfg
++++ b/src/db4sil2.cfg
+@@ -4,41 +4,27 @@ hostname: debian
+ 
+ [tests]
+ testexec_files: tests_list
+-num_runs: 100
++num_runs: 1000
+ testmode: suiteiteration
+-allowed_backlog: 100000
++allowed_backlog: 200000
+ 
+ [postprocessing]
+ nr_workers: 10
+-delete_raw_data: false
+-syscalls: __arm64_sys_access, __arm64_sys_execve, __arm64_sys_getuid,
+- __arm64_sys_mq_timedsend, __arm64_sys_read, __arm64_sys_sched_get_priority_max,
+- __arm64_sys_timer_create, __arm64_sys_alarm, __arm64_sys_exit,
+- __arm64_sys_kill, __arm64_sys_msync, __arm64_sys_restart_syscall,
+- __arm64_sys_sched_get_priority_min, __arm64_sys_timer_delete,
+- __arm64_sys_arch_prctl, __arm64_sys_exit_group, __arm64_sys_link,
+- __arm64_sys_munlockall, __arm64_sys_rt_sigaction,
+- __arm64_sys_sched_getscheduler, __arm64_sys_timer_gettime, __arm64_sys_brk,
+- __arm64_sys_fcntl, __arm64_sys_lseek, __arm64_sys_munmap,
+- __arm64_sys_rt_sigpending, __arm64_sys_sched_setscheduler,
+- __arm64_sys_timer_settime, __arm64_sys_clock_getres, __arm64_sys_fsync,
+- __arm64_sys_madvise, __arm64_sys_nanosleep, __arm64_sys_rt_sigprocmask,
+- __arm64_sys_sched_yield, __arm64_sys_times, __arm64_sys_clock_gettime,
+- __arm64_sys_ftruncate, __arm64_sys_mmap, __arm64_sys_newfstat,
+- __arm64_sys_rt_sigqueueinfo, __arm64_sys_setitimer, __arm64_sys_unlink,
+- __arm64_sys_clock_nanosleep, __arm64_sys_futex, __arm64_sys_mmap_pgoff,
+- __arm64_sys_newlstat, __arm64_sys_rt_sigreturn, __arm64_sys_setresuid,
+- __arm64_sys_wait4, __arm64_sys_clock_settime, __arm64_sys_getdents,
+- __arm64_sys_mprotect, __arm64_sys_newstat, __arm64_sys_rt_sigsuspend,
+- __arm64_sys_set_robust_list, __arm64_sys_write, __arm64_sys_clone,
+- __arm64_sys_getitimer, __arm64_sys_mq_getsetattr, __arm64_sys_open,
+- __arm64_sys_rt_sigtimedwait, __arm64_sys_set_tid_address, __arm64_sys_mlock,
+- __arm64_sys_close, __arm64_sys_getppid, __arm64_sys_mq_open,
+- __arm64_sys_openat, __arm64_sys_sched_getaffinity, __arm64_sys_statfs,
+- __arm64_sys_geteuid, __arm64_sys_dup, __arm64_sys_getrlimit,
+- __arm64_sys_mq_timedreceive, __arm64_sys_pipe, __arm64_sys_sched_getparam,
+- __arm64_sys_tgkill, __arm64_sys_ioctl
+++delete_raw_data: true
++syscalls: SyS_accept, SyS_bind, SyS_brk, SyS_clone, SyS_close, 
++	SyS_connect, SyS_execve, SyS_exit_group, SyS_faccessat, 
++	SyS_fcntl, SyS_fstat, SyS_futex, SyS_getcwd, SyS_getdents64,
++	SyS_geteuid, SyS_getpid, SyS_getrandom, SyS_ioctl, SyS_listen,
++	SyS_lseek, SyS_mkdirat, SyS_mmap, SyS_mmap_pgoff, SyS_mprotect,
++	SyS_munmap, SyS_newfstatat, SyS_openat, SyS_pipe2, SyS_prlimit64,
++	SyS_read, SyS_readlinkat, SyS_rt_sigaction, SyS_rt_sigprocmask,
++	SyS_sched_getaffinity, SyS_sched_get_priority_max,
++	SyS_sched_get_priority_min, SyS_sched_yield, SyS_sendto,
++	SyS_set_robust_list, SyS_setsockopt, SyS_set_tid_address,
++	SyS_socket, SyS_statfs, SyS_sysinfo, SyS_uname, SyS_wait4,
++	SyS_write
++
+ 
+ [network]
+ servername: 10.0.0.1
+-serverport: 4712
++serverport: 4713
+diff --git a/src/ftracelexer.py b/src/ftracelexer.py
+index a373343..37d7a51 100644
+--- a/src/ftracelexer.py
++++ b/src/ftracelexer.py
+@@ -49,10 +49,21 @@ class Ftracelexer:
+     # Comments in the raw trace are discarded.
+     t_ANY_ignore_COMMENT = r'\/\*[\w\[\] .]*\*\/'
+ 
+-    t_ANY_TSWITCH = r'\#\#TASK_SWITCH:\s*[\w<>.\-]*\s*\=>\s*[\w<>.\-]*\s*\#\#'
++    def t_INITIAL_TSWITCH(self, token):
++        r'\#\#TASK_SWITCH:\s*[\w<>.:\-\/]*\s*\=>\s*[\w<>.:\-\/]*\s*\#\#'
++        return token
++
++    def t_insyscall_TSWITCH(self, token):
++        r'\#\#TASK_SWITCH:\s*[\w<>.:\-\/]*\s*\=>\s*[\w<>.:\-\/]*\s*\#\#'
++        token.value = "insyscall_" + token.value
++        return token
++
++    def t_asyncevent_TSWITCH(self, token):
++        r'\#\#TASK_SWITCH:\s*[\w<>.:\-\/]*\s*\=>\s*[\w<>.:\-\/]*\s*\#\#'
++        return token
+ 
+     def t_ANY_TPID(self, token):
+-        r'\d\)\s*[\w<>\-.]+-\d{1,5}\s'
++        r'\d\)\s*[\w<>\-.:\/]+-\d{1,5}\s'
+         # If the PID changed, we need to switch to using the data of the
+         # new PID:
+         if token.lexer.currentpid != token.value:
+@@ -86,83 +97,15 @@ class Ftracelexer:
+         return token
+ 
+     def t_insyscall_ASYNCSTART(self, token):
+-        (r'__do_page_fault\(\);?'
+-         r'|__update_curr\(\);?'
+-         r'|__compute_runnable_contrib\(\);?'
+-         r'|preempt_schedule_irq\(\);?'
+-         r'|tty_schedule_flip\(\);?'
+-         r'|smp_thermal_interrupt\(\);?'
+-         r'|rcu_note_context_switch\(\);?'
+-         r'|pick_next_task_fair\(\);?'
+-         r'|net_rx_action\(\);?' 
+-         r'|net_tx_action\(\);?'
+-         r'|tasklet_action\(\);?'
+-         r'|tasklet_hi_action\(\);?'
+-         r'|run_rebalance_domains\(\);?'
+-         r'|blk_done_softirq\(\);?'
+-         r'|irq_poll_softirq\(\);?'
+-         r'|run_timer_softirq\(\);?'
+-         r'|rcu_process_callbacks\(\);?'
+-         r'|acpi_device_del_work_fn\(\);?'
+-         r'|aer_recover_work_func\(\);?'
+-         r'|afs_collect_incoming_call\(\);?'
+-         r'|bio_dirty_fn\(\);?'
+-         r'|cleanup_net\(\);?'
+-         r'|__clear_sched_clock_stable\(\);?'
+-         r'|clocksource_watchdog_work\(\);?'
+-         r'|clock_was_set_work\(\);?'
+-         r'|close_work\(\);?'
+-         r'|con_driver_unregister_callback\(\);?'
+-         r'|console_callback\(\);?'
+-         r'|cpuset_hotplug_workfn\(\);?'
+-         r'|deferred_cad\(\);?'
+-         r'|deferred_probe_work_func\(\);?'
+-         r'|do_deferred_remove\(\);?'
+-         r'|do_poweroff\(\);?'
+-         r'|event_handler\(\);?'
+-         r'|evm_deferred_drvvbus\(\);?'
+-         r'|fcopy_send_data\(\);?'
+-         r'|free_obj_work\(\);?'
+-         r'|ia64_mca_cmc_vector_disable_keventd\(\);?'
+-         r'|ia64_mca_cmc_vector_enable_keventd\(\);?'
+-         r'|iio_dma_buffer_cleanup_worker\(\);?'
+-         r'|ioc4_load_modules\(\);?'
+-         r'|iucv_work_fn\(\);?'
+-         r'|kernfs_notify_workfn\(\);?'
+-         r'|kgdboc_restore_input_helper\(\);?'
+-         r'|kmemleak_do_cleanup\(\);?'
+-         r'|kvp_send_key\(\);?'
+-         r'|maple_dma_handler\(\);?'
+-         r'|maple_vblank_handler\(\);?'
+-         r'|mce_do_trigger\(\);?'
+-         r'|moom_callback\(\);?'
+-         r'|p9_poll_workfn\(\);?'
+-         r'|pcpu_balance_workfn\(\);?'
+-         r'|perform_shutdown\(\);?'
+-         r'|poweroff_work_func\(\);?'
+-         r'|process_sci_queue_work\(\);?'
+-         r'|pstore_dowork\(\);?'
+-         r'|pvclock_gtod_update_fn\(\);?'
+-         r'|reboot_work_func\(\);?'
+-         r'|sb_notify_work\(\);?'
+-         r'|serio_handle_event\(\);?'
+-         r'|ser_release\(\);?'
+-         r'|switchdev_deferred_process_work\(\);?'
+-         r'|sysrq_showregs_othercpus\(\);?'
+-         r'|try_to_suspend\(\);?'
+-         r'|vmci_transport_cleanup\(\);?'
+-         r'|vss_send_op\(\);?'
+-         r'|__wakelocks_gc\(\);?'
+-         r'|smp_reschedule_interrupt\(\);?')
+-        curpid = token.lexer.currentpid
+-        token.lexer.async_balance[curpid].append(token.lexer.num_braces[curpid])
+-        token.lexer.async_nesting[token.lexer.currentpid] += 1
+-        token.lexer.begin('asyncevent')
++        r'We ignore it and make it part of the trace'
+         return token
+ 
+     def t_insyscall_INTSTART(self, token):
+         r'\#\#INTERRUPT_START\#\#'
+         token.lexer.begin('asyncevent')
++
++        # We ignore it and make it part of the trace
++        token.value = "insyscall_" + token.value
+         return token
+ 
+     # TODO: Handle interrupts outside of a syscall -- for now
+@@ -170,10 +113,20 @@ class Ftracelexer:
+     def t_INITIAL_INTSTART(self, token):
+         r'\#\#INTERRUPT_START\#\#'
+ 
++    def t_asyncevent_INTSTART(self, token):
++        r'\#\#INTERRUPT_START\#\#'
++        token.lexer.int_nesting[token.lexer.currentpid] += 1
++
+     def t_asyncevent_INTEND(self, token):
+         r'\#\#INTERRUPT_END\#\#'
+-        token.lexer.begin('insyscall')
+-        return token
++        if token.lexer.int_nesting[token.lexer.currentpid] > 0:
++            token.lexer.int_nesting[token.lexer.currentpid] -= 1
++        else:
++            token.lexer.begin('insyscall')
++
++            # We ignore it and make it part of the trace
++            token.value = "insyscall_" + token.value
++            return token
+ 
+     # TODO: Handle interrupts outside of a syscall -- for now
+     #       those are ignored.
+@@ -245,7 +198,7 @@ class Ftracelexer:
+ 
+     # An error handling rule, in case no regex could be matched.
+     def t_ANY_error(self, token):
+-        l.log_a_msg("Illegal character '%s'" % token.value[0], "ERROR", \
++        l.log_a_msg("Illegal character '%s' line: %d" % (token.value[0],token.lineno), "ERROR", \
+                   self.loggerq, self.workername)
+         token.lexer.skip(1)
+ 
+diff --git a/src/process_trace.py b/src/process_trace.py
+index 7181341..5067864 100644
+--- a/src/process_trace.py
++++ b/src/process_trace.py
+@@ -82,6 +82,10 @@ def read_tracebuf(tfile, workername, loggerq):
+     Read the raw trace from tfile and store it in a buffer. In addition
+     certain events like task switches and interrupts are marked to simplyfy the
+     processing later on.
++
++    Also save the durations column from the trace, adding an empty line every time
++    a marked event is added to the trace buffer, so that the line number is
++    maintained and can be used later on.
+     """
+     try:
+         fp_trace = open(tfile)
+@@ -92,23 +96,33 @@ def read_tracebuf(tfile, workername, loggerq):
+         return 1
+ 
+     tracebuf = ''
++    timingbuf = ''
+     for line in fp_trace:
+         # skip comments and dash-lines
+         if re.search("^#", line) or re.search("^\n$", line):
+-            continue
++            tracebuf += "\n"
++            timingbuf += "\n"
+         elif re.search("-----------", line):
+             line = next(fp_trace)
+-            tracebuf += "##TASK_SWITCH: {0}##".format(\
++            tracebuf += "##TASK_SWITCH: {0}##\n\n\n".format(\
+                                                  line.split(')')[1].strip())
++            # Task switches are preceded and succeeded by dashed lines,
++            # but only one line is added to the trace buffer, therefore only
++            # one line must be added to the timing buffer so that line
++            # numbers are mantained 
++            timingbuf += "\n\n\n"
+             line = next(fp_trace)
+         elif "====>" in line:
+             tracebuf += "##INTERRUPT_START##\n"
++            timingbuf += "\n"
+         elif "<====" in line:
+             tracebuf += "##INTERRUPT_END##\n"
++            timingbuf += "\n"
+         else:
+             try:
+                 columns = line.split('|')
+-                #timingbuf.append(columns[1])
++                #TODO no es necesario que sea string, puedo hacer lista
++                timingbuf += columns[1] + "\n"
+                 tracebuf += columns[0]
+                 tracebuf += columns[2][2:]
+             except IndexError:
+@@ -116,7 +130,7 @@ def read_tracebuf(tfile, workername, loggerq):
+                             "WARNING", loggerq, workername)
+ 
+     fp_trace.close()
+-    return tracebuf
++    return tracebuf, timingbuf
+ 
+ 
+ # tracefile: the raw tracefile
+@@ -137,11 +151,20 @@ def search_syscalls(tracefile, searchlist, testname, hostname, \
+         l.log_a_msg(err, "ERROR", loggerq, "ftrace_session")
+         return 1
+ 
+-    tracebuf = read_tracebuf(tracefile, workername, loggerq)
++    # Also save the duration column from the raw trace
++    tracebuf, timingbuf = read_tracebuf(tracefile, workername, loggerq)
++
++    # Remove anything but the numbers from the timings, keep the empty
++    # lines to mantain line numbers
++    timingbuf = timingbuf.split("\n") # TODO this might not work, does
++                                      #      columns[1] include \n?
++    timingbuf = [re.search(r'\d+\.?\d+', elem) for elem in timingbuf]
++    timingbuf = [elem.group() if elem != None else elem for elem in timingbuf]
+ 
+     lexer = lex.lex(module=ftracelexer.Ftracelexer(searchlist, \
+                                                    workername, \
+                                                    loggerq))
++    lexer.int_nesting = collections.defaultdict(int)
+     lexer.async_nesting = collections.defaultdict(int)
+     lexer.async_balance = collections.defaultdict(list)
+     lexer.num_braces = collections.defaultdict(int)
+@@ -201,14 +224,20 @@ def search_syscalls(tracefile, searchlist, testname, hostname, \
+                     meta_buf[current_pid].append("TRACE HASH: {0}\n".format( \
+                                                                         thash))
+ 
++                    # When a syscall end is detected, its duration is written
++                    # Seems like lineno starts from 1, not 0, so we need -1
++                    meta_buf[current_pid].append("DURATION: {0} us\n".format( \
++                                                        timingbuf[tok.lineno-1]))
++
+                     write_outfile(flist[current_pid]['meta_fname'], \
+                                   meta_buf[current_pid])
+ 
+                     found_list.append(flist[current_pid]['tout_fname'])
+ 
+-                    fp_tmeta.write("E:{0}:{1}:{2}\n".format(current_pid, \
++                    fp_tmeta.write("E:{0}:{1}:{2} duration: {3} us\n".format(current_pid, \
+                                                             tok.lineno, \
+-                                                            thash))
++                                                            thash, \
++                                                            timingbuf[tok.lineno-1]))
+ 
+                     # Remove all data of this PID!
+                     flist.pop(current_pid)
+@@ -234,12 +263,16 @@ def search_syscalls(tracefile, searchlist, testname, hostname, \
+                 thash = md5(flist[current_pid]['tout_fname'])
+ 
+                 write_outfile(flist[current_pid]['meta_fname'], \
+-                              "TRACE HASH: {0}\n".format(thash))
++                              "TRACE HASH: {0}\nDURATION: {1} us\n".format(thash, timingbuf[tok.lineno-1]))
++
++                # When a syscall end is detected, its duration is written
++                # Seems like lineno starts from 1, not 0, so we need -1
+ 
+                 found_list.append(flist[current_pid]['tout_fname'])
+-                fp_tmeta.write("E:{0}:{1}:{2}\n".format(current_pid, \
++                fp_tmeta.write("E:{0}:{1}:{2} duration: {3} us\n".format(current_pid, \
+                                                         tok.lineno, \
+-                                                        thash))
++                                                        thash, \
++                                                        timingbuf[tok.lineno-1]))
+                 flist.pop(current_pid)
+ 
+             elif tok.type == "TLINE":
+@@ -256,6 +289,10 @@ def search_syscalls(tracefile, searchlist, testname, hostname, \
+                 fp_tmeta.write("AE:{0}\n".format(tok.lineno))
+ 
+             elif tok.type == "INTSTART":
++                nosys = tok.value.split("insyscall_")[-1]
++                if nosys != tok.value: # This means we are in a syscall
++                    tout_buf[current_pid].append("{0}{1}\n".format(" "*2*nrspaces, \
++                                                               "##INTERRUPT##"))
+                 meta_buf[current_pid].append("IS:{0}\n".format(tok.lineno))
+                 fp_tmeta.write("IS:{0}\n".format(tok.lineno))
+ 
+@@ -264,6 +301,10 @@ def search_syscalls(tracefile, searchlist, testname, hostname, \
+                 fp_tmeta.write("IE:{0}\n".format(tok.lineno))
+ 
+             elif tok.type == "TSWITCH":
++                nosys = tok.value.split("insyscall_")[-1]
++                if nosys != tok.value: # This means we are in a syscall
++                    tout_buf[current_pid].append("{0}{1}\n".format(" "*2*nrspaces, \
++                                                               "##TASK_SWITCH##"))
+                 fp_tmeta.write("T:{0}: {1}\n".format(tok.lineno, \
+                                                      tok.value))
+ 
+@@ -288,5 +329,5 @@ def strip_testname(tracefile):
+             for line in f_raw:
+                 tf_raw.write(line)
+ 
+-    os.system("mv -f tmp_{0} {0}".format(tracefile))
++    os.system("mv -f tmp_{0} {0}".format(tracefile)) # -f depending on the folder permissions
+     return testname
+diff --git a/src/test_client.py b/src/test_client.py
+index db43362..dafdd16 100644
+--- a/src/test_client.py
++++ b/src/test_client.py
+@@ -21,7 +21,18 @@ def perform_test(testexec, testtrace, host, port, loggerq):
+     """
+     perform one test, that is run one test-executable once.
+     """
+-    timeout = 60
++
++    # Wait for server to be ready first
++    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
++        while True:
++            try:
++                sock.connect((host, port))
++                break
++            except:
++                #l.log_a_msg("Server not ready, waiting...", "ERROR", loggerq, "test_client")
++                time.sleep(5)
++
++    timeout = 600
+     try:
+         pid = os.fork()
+     except OSError as err:
+@@ -35,40 +46,31 @@ def perform_test(testexec, testtrace, host, port, loggerq):
+         #     -> run the test executable
+         child_pid = os.getpid()
+ 
+-        # it makes live a little easier to keep the process at one cpu
+-        os.sched_setaffinity(0, [0])
++        # start ftrace:
++        # ftrace should be started from the program under test now
+ 
+-        # start ftrace
+-        testtrace.start_trace(child_pid)
+-        l.log_a_msg("Running test: {0}.".format(testexec), "INFO", \
+-                    loggerq, "test_client")
+         # just in case someone added some spaces in the tests file
+         testexec = testexec.strip()
+         cmd = testexec.split(' ')[0]
+         args = testexec.split('/')[-1].split(' ')
+         # use os.exec to run the subprocess in current shell
+         os.execv(cmd, args)
+-        l.log_a_msg("Done.", "INFO", loggerq, "test_client")
+ 
+     else:
+         giveup_time = time.time() + timeout
+         while os.waitpid(int(pid), os.WNOHANG) == (0,0):
+             time.sleep(0.5)
+-            if time.time() > giveup_time:
+-                cmd = "kill -9 {0}".format(pid)
+-                os.system(cmd)
+-                break
+-        # stop tracing and store trace
+-        #os.waitpid(int(pid), os.WUNTRACED)
+         current_t = datetime.datetime.now()
+         formatted_dt = current_t.strftime("%Y-%m-%d_%H%M%S%f")
+         test_tracefile = "test_trace_{0}".format(formatted_dt)
+         testtrace.stop_and_store_trace(test_tracefile, testexec)
+ 
+-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+-        sock.connect((host, port))
+-        sock.sendall(bytes("{0}".format(test_tracefile), "utf-8"))
+-        sock.close()
++        # Connect again, Linux has timed out the conn
++        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
++            sock.connect((host, port))
++            sock.sendall(bytes("{0}".format(test_tracefile), "utf-8"))
++            sock.recv(1024) # Wait for server close
++            sock.close()
+ 
+ def test_client_code():
+     """
+@@ -99,12 +101,13 @@ def test_client_code():
+     host, port = cfg.get_client_config('db4sil2.cfg', "test_client", \
+                                        logger_queue)
+ 
++    # We now activate irq tracing
+     testtrace = fs.FtraceSession(tracepath, logger_queue)
+     testtrace.reset_ftrace()
+     testtrace.set_tracer("function_graph")
+     testtrace.set_trace_option("funcgraph-proc")
+-    testtrace.set_trace_option("noirq-info")
+-    testtrace.set_trace_option("nofuncgraph-irqs")
++    testtrace.set_trace_option("irq-info")
++    testtrace.set_trace_option("funcgraph-irqs")
+ 
+     if testmode == "suiteiteration":
+         for run in range(0, numruns):
+@@ -137,4 +140,4 @@ def test_client_code():
+     sys.exit(0)
+ ### main ###
+ if __name__ == '__main__':
+-    test_client_code()
++    test_client_code()
+\ No newline at end of file
+diff --git a/src/test_server.py b/src/test_server.py
+index e766853..aacb067 100644
+--- a/src/test_server.py
++++ b/src/test_server.py
+@@ -11,6 +11,7 @@ import test_worker
+ import logger as l
+ import collections
+ import dill as pickle
++import time
+ 
+ EXIT_FLAG = 0
+ 
+@@ -86,32 +87,53 @@ def init_test_server(config_file):
+     l.log_a_msg("All threads started successfully.", "INFO", \
+                 logger_queue, "test_server")
+ 
+-    return host, port, tracefile, slist, trace_queue, logger_queue
++    return host, port, tracefile, slist, trace_queue, logger_queue, numruns
+ 
+-def wait_for_raw_traces(host, port, tracefile, trace_queue, logger_queue):
++def wait_for_raw_traces(host, port, tracefile, trace_queue, logger_queue, numruns):
+     """
+     receive info about raw_traes ready to handle via a socket and put it
+     into the trace_queue so workers can pick them up for post-processing.
+     """
+-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+-        sock.bind((host, port))
+-        sock.listen(1)
+-
+-        while not EXIT_FLAG:
+-
+-            try:
+-                conn, addr = sock.accept()
+-            except OSError as err:
+-                l.log_a_msg(err, "ERROR", logger_queue, "test_server")
+-                break
+-
+-            tracefile = conn.recv(1024)
+-            l.log_a_msg("Host {0} Request for file {1}".format(addr, \
+-                        tracefile.decode("utf-8")), "INFO", logger_queue, \
+-                        "test_server")
+-            trace_queue.put(dict({"tfile": tracefile.decode("utf-8")}))
+-            l.log_a_msg("Current Queue Size: {0}".format(trace_queue.qsize()), \
+-                        "INFO", logger_queue, "test_server")
++    run = 0
++    while not EXIT_FLAG:
++        # If camapign is over, do not let the client to start with the next one
++        if run >= numruns:
++            #l.log_a_msg("Ignoring client, numruns reached", "INFO", logger_queue, "test_server")
++            time.sleep(5)
++        else:
++            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
++                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++                sock.bind((host, port))
++                sock.listen(1)
++                try:
++                    conn, addr = sock.accept()
++                except OSError as err:
++                    l.log_a_msg(err, "ERROR", logger_queue, "test_server")
++                    break
++
++            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
++                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++                sock.bind((host, port))
++                sock.listen(1)
++                try:
++                    conn, addr = sock.accept()
++                except OSError as err:
++                    l.log_a_msg(err, "ERROR", logger_queue, "test_server")
++                    break
++                tracefile = conn.recv(1024)
++                l.log_a_msg("Host {0} Request for file {1}".format(addr, \
++                            tracefile.decode("utf-8")), "INFO", logger_queue, \
++                            "test_server")
++
++                if run < numruns:
++                    trace_queue.put(dict({"tfile": tracefile.decode("utf-8")}))
++                    l.log_a_msg("Current Queue Size: {0}, Run Number: {1}".format(trace_queue.qsize(), run), \
++                            "INFO", logger_queue, "test_server")
++                    run += 1
++
++                conn.sendall(b'1') # Notify the client that it can close the socket
++                sock.close()
++                time.sleep(1) # para que no tengamos "address already in use"
+ 
+ 
+ def server_code():
+@@ -121,9 +143,9 @@ def server_code():
+ 
+     config_file = 'db4sil2.cfg'
+     host, port, tracefile, \
+-    slist, trace_queue, logger_queue = init_test_server(config_file)
++    slist, trace_queue, logger_queue, numruns = init_test_server(config_file)
+ 
+-    wait_for_raw_traces(host, port, tracefile, trace_queue, logger_queue)
++    wait_for_raw_traces(host, port, tracefile, trace_queue, logger_queue, numruns)
+ 
+     # EXIT_FLAG was set
+     # let's store our internal state to a file so we may resume
+@@ -135,4 +157,4 @@ def server_code():
+ 
+ 
+ if __name__ == '__main__':
+-    server_code()
++    server_code()    
+\ No newline at end of file
+diff --git a/src/test_server.sh b/src/test_server.sh
+index 051777e..c4119d7 100644
+--- a/src/test_server.sh
++++ b/src/test_server.sh
+@@ -1,16 +1,6 @@
+ #!/bin/bash
+ 
+-SYSCALLS="__arm64_sys_access __arm64_sys_execve      __arm64_sys_getuid           __arm64_sys_mq_timedsend  __arm64_sys_read               __arm64_sys_sched_get_priority_max  __arm64_sys_timer_create
+-__arm64_sys_alarm            __arm64_sys_exit        __arm64_sys_kill             __arm64_sys_msync         __arm64_sys_restart_syscall    __arm64_sys_sched_get_priority_min  __arm64_sys_timer_delete
+-__arm64_sys_arch_prctl       __arm64_sys_exit_group  __arm64_sys_link             __arm64_sys_munlockall    __arm64_sys_rt_sigaction       __arm64_sys_sched_getscheduler      __arm64_sys_timer_gettime
+-__arm64_sys_brk              __arm64_sys_fcntl       __arm64_sys_lseek            __arm64_sys_munmap        __arm64_sys_rt_sigpending      __arm64_sys_sched_setscheduler      __arm64_sys_timer_settime
+-__arm64_sys_clock_getres     __arm64_sys_fsync       __arm64_sys_madvise          __arm64_sys_nanosleep     __arm64_sys_rt_sigprocmask     __arm64_sys_sched_yield             __arm64_sys_times
+-__arm64_sys_clock_gettime    __arm64_sys_ftruncate   __arm64_sys_mmap             __arm64_sys_newfstat      __arm64_sys_rt_sigqueueinfo    __arm64_sys_setitimer               __arm64_sys_unlink
+-__arm64_sys_clock_nanosleep  __arm64_sys_futex       __arm64_sys_mmap_pgoff       __arm64_sys_newlstat      __arm64_sys_rt_sigreturn       __arm64_sys_setresuid               __arm64_sys_wait4
+-__arm64_sys_clock_settime    __arm64_sys_getdents    __arm64_sys_mprotect         __arm64_sys_newstat       __arm64_sys_rt_sigsuspend      __arm64_sys_set_robust_list         __arm64_sys_write
+-__arm64_sys_clone            __arm64_sys_getitimer   __arm64_sys_mq_getsetattr    __arm64_sys_open          __arm64_sys_rt_sigtimedwait    __arm64_sys_set_tid_address         __arm64_sys_mlock
+-__arm64_sys_close            __arm64_sys_getppid     __arm64_sys_mq_open          __arm64_sys_openat        __arm64_sys_sched_getaffinity  __arm64_sys_statfs                  __arm64_sys_geteuid
+-__arm64_sys_dup              __arm64_sys_getrlimit   __arm64_sys_mq_timedreceive  __arm64_sys_pipe          __arm64_sys_sched_getparam     __arm64_sys_tgkill                  __arm64_sys_ioctl "
++SYSCALLS="SyS_accept SyS_bind SyS_brk SyS_clone SyS_close SyS_connect SyS_execve SyS_exit_group SyS_faccessat SyS_fcntl SyS_fstat SyS_futex SyS_getcwd SyS_getdents64 SyS_geteuid SyS_getpid SyS_getrandom SyS_ioctl SyS_listen SyS_lseek SyS_mkdirat SyS_mmap SyS_mmap_pgoff SyS_mprotect SyS_munmap SyS_newfstatat SyS_openat SyS_pipe2 SyS_prlimit64 SyS_read SyS_readlinkat SyS_rt_sigaction SyS_rt_sigprocmask SyS_sched_getaffinity SyS_sched_get_priority_max SyS_sched_get_priority_min SyS_sched_yield SyS_sendto SyS_set_robust_list SyS_setsockopt SyS_set_tid_address SyS_socket SyS_statfs SyS_sysinfo SyS_uname SyS_wait4 SyS_write"
+ 
+ if [ $1 = "start" ]
+ then
+@@ -21,17 +11,25 @@ then
+    else
+       while true
+       do
+-        for S in $SYSCALLS; do
+-           mkdir -p syscalls/traces/$S
+-           mkdir -p syscalls/traces/$S/unique_traces
+-           mkdir -p syscalls/timings/$S
+-           mkdir -p syscalls/meta/$S
+-        done
+-        mkdir -p syscalls/meta/PER_TEST
++         for S in $SYSCALLS; do
++            mkdir -p syscalls/traces/$S
++            mkdir -p syscalls/traces/$S/unique_traces
++            mkdir -p syscalls/timings/$S
++            mkdir -p syscalls/meta/$S
++         done
++         mkdir -p syscalls/meta/PER_TEST
+ 
+-        python3 test_server.py --config-file $2  #> std.out 2> std.err &
+-        echo "App restart"
+-        sleep 250
++         # Create logfile to have permission to write it
++         touch db4sil2_client.log
++
++         python3 test_server.py --config-file $2  #> std.out 2> std.err &
++         echo "App restart"
++         sleep 30
++
++         cp db4sil2_client.log db4sil2_client.log.prev
++	      echo "" > db4sil2_client.log
++	      cp db4sil2_server.log db4sil2_server.log.prev
++	      echo "" > db4sil2_server.log
+       done
+    fi
+ elif [ $1 = "stop" ]
+@@ -39,6 +37,7 @@ then
+    PID=$(cat test_server.pid)
+    kill -9 $PID
+    rm test_server.pid
++   rm connection.pid
+ else
+    echo "Usage: ./test_server.sh [start|stop]"
+ fi
+diff --git a/src/test_worker.py b/src/test_worker.py
+index b81f990..46ffa9e 100644
+--- a/src/test_worker.py
++++ b/src/test_worker.py
+@@ -40,6 +40,8 @@ class Testworker(threading.Thread):
+         """
+         self.log_a_msg("Starting Worker!", "INFO")
+ 
++        results_dir = "/srv/results"
++
+         global executed_runs
+ 
+         search_list = ""
+@@ -75,8 +77,9 @@ class Testworker(threading.Thread):
+ 
+             if executed_runs == self.num_runs:
+                 current_t = datetime.datetime.now()
+-                cmd = "mkdir ../results/test_{0}; \
+-                       mv test_trace* ../results/test_{0}; \
+-                       mv syscalls ../results/test_{0};".format(current_t.strftime("%Y-%m-%d_%H%M%S%f"))
++                cmd = "mkdir {0}/test_{1}; \
++                       mv test_trace* {0}/test_{1}; \
++                       mv syscalls {0}/test_{1};".format(results_dir, \
++                                                            current_t.strftime("%Y-%m-%d_%H%M%S%f"))
+                 os.system(cmd)
+                 os.kill(os.getpid(), signal.SIGKILL)
+diff --git a/src/tests_list b/src/tests_list
+index 6bf3be3..f285285 100644
+--- a/src/tests_list
++++ b/src/tests_list
+@@ -1 +1 @@
+-/bin/date
++/home/nano1/randbyte

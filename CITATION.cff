@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this artifact, please cite the paper."
+title: "Reproducibility artifact for: Characterizing and Monitoring Linux System Call Variability for Safety-Critical Systems"
+authors:
+  - family-names: "Lefebvre"
+    given-names: "Charles-Alexis"
+    affiliation: "Ikerlan Technology Research Centre, Basque Research and Technology Alliance (BRTA), Arrasate/Mondragon, Spain"
+  - family-names: "Galarraga"
+    given-names: "Markel"
+    affiliation: "Ikerlan Technology Research Centre, Basque Research and Technology Alliance (BRTA), Arrasate/Mondragon, Spain"
+  - family-names: "Perez-Cerrolaza"
+    given-names: "Jon"
+    affiliation: "Ikerlan Technology Research Centre, Basque Research and Technology Alliance (BRTA), Arrasate/Mondragon, Spain"
+  - family-names: "Pascual"
+    given-names: "Jose A."
+    affiliation: "Faculty of Informatics, University of the Basque Country (UPV/EHU), Donostia-San Sebastián, Spain"
+version: v1.0.0
+date-released: 2026-10-27
+license: AGPL-3.0-only
